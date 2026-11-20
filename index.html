@@ -459,6 +459,7 @@
         return false;
     }
 
+    
     const keys = { left: false, right: false };
     window.addEventListener('keydown', e => {
         if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
@@ -499,6 +500,53 @@
     document.getElementById('btn-action').addEventListener('mousedown', e => {
         e.stopPropagation();
         performAttack();
+    });
+
+    function handleWorldTap(clientX, clientY) {
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+        const camX = Math.floor(player.x - canvas.width / 2);
+        const camY = Math.floor(player.y - canvas.height / 2);
+        const worldX = clientX + camX;
+        const worldY = clientY + camY;
+
+        if (Math.hypot(worldX - guide.x, worldY - guide.y) < 60 && Math.hypot(player.x - guide.x, player.y - guide.y) < 100) {
+            openDialog();
+            return;
+        }
+
+        if (selectedTool === 2) {
+            performAttack();
+            return;
+        }
+
+        const tx = Math.floor(worldX / TILE);
+        const ty = Math.floor(worldY / TILE);
+        const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
+
+        if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
+            const block = world[ty][tx];
+            if (selectedTool === 0 && block > 0) {
+                if (block === 1 || block === 2) player.dirt++;
+                if (block === 4) { player.ore++; checkQuest(); }
+                world[ty][tx] = 0;
+                updateUI();
+            } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
+                world[ty][tx] = 2;
+                player.dirt--;
+                if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
+                updateUI();
+            }
+        }
+    }
+
+    canvas.addEventListener('touchstart', e => {
+        e.preventDefault();
+        const t = e.changedTouches && e.changedTouches[0];
+        if (t) handleWorldTap(t.clientX, t.clientY);
+    }, { passive: false });
+
+    canvas.addEventListener('mousedown', e => {
+        if (e.button === 0) handleWorldTap(e.clientX, e.clientY);
     });
 
     canvas.addEventListener('pointerdown', e => {
