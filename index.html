@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pixel Realm: Terraria Style</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+        body {
+            margin: 0; padding: 0; overflow: hidden;
+            background-color: #1a1a2e; font-family: 'Courier New', monospace;
+            color: white; touch-action: none;
+        }
+        canvas { display: block; image-rendering: pixelated; }
+
+        /* Интерфейс поверх игры */
+        #ui {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            display: flex; justify-content: space-between; pointer-events: none;
+        }
+        .panel {
+            background: rgba(20, 20, 35, 0.85); border: 2px solid #5c5c8a;
+            padding: 6px 10px; border-radius: 6px; font-size: 13px;
+        }
+        #hotbar {
+            position: absolute; top: 55px; left: 10px; display: flex; gap: 6px;
+        }
+        .slot {
+            width: 42px; height: 42px; background: rgba(20, 20, 35, 0.85);
+            border: 2px solid #5c5c8a; border-radius: 6px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            font-size: 11px; cursor: pointer;
+        }
+        .slot.active { border-color: #ffd700; background: rgba(60, 60, 100, 0.9); }
+
+        /* Сюжетное диалоговое окно */
+        #dialog {
+            position: absolute; bottom: 110px; left: 15px; right: 15px;
+            background: rgba(15, 15, 25, 0.95); border: 3px solid #ffd700;
+            border-radius: 8px; padding: 12px; display: none;
+        }
+        #dialog-title { color: #ffd700; font-weight: bold; margin-bottom: 5px; }
+        #dialog-text { font-size: 13px; line-height: 1.4; margin-bottom: 10px; }
+        #dialog-btn {
+            background: #ffd700; color: #000; border: none; padding: 6px 14px;
+            font-weight: bold; border-radius: 4px; cursor: pointer; font-family: inherit;
+        }
+
+        /* Сенсорное управление */
+        #controls {
+            position: absolute; bottom: 15px; left: 15px; right: 15px;
+            display: flex; justify-content: space-between; pointer-events: none;
+        }
+        .ctrl-group { display: flex; gap: 10px; pointer-events: auto; }
+        .btn {
+            width: 55px; height: 55px; background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.4); border-radius: 50%;
+            color: white; font-size: 20px; display: flex; align-items: center; justify-content: center;
+        }
+        .btn:active { background: rgba(255, 215, 0, 0.4); }
+    </style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui">
+    <div class="panel">❤️ HP: <span id="hp">100</span> | 💎 Руда: <span id="ore">0</span></div>
+    <div class="panel" id="quest-box">Квест: Поговори с Гидом</div>
+</div>
+
+<div id="hotbar">
+    <div class="slot active" onclick="selectTool(0)" id="slot-0">⛏️<br>Кирка</div>
+    <div class="slot" onclick="selectTool(1)" id="slot-1">🟫<br><span id="inv-dirt">10</span></div>
+    <div class="slot" onclick="selectTool(2)" id="slot-2">⚔️<br>Меч</div>
+</div>
+
+<div id="dialog">
+    <div id="dialog-title">🧙‍♂️ Старый Гид</div>
+    <div id="dialog-text">Приветствую в этих землях! Ночью здесь опасно. Спустись под землю, добудь 5 кристаллов древней руды (синие блоки), чтобы сковать клинок и одолеть Слизня-Стража!</div>
+    <button id="dialog-btn" onclick="closeDialog()">Принять задание</button>
+</div>
+
+<div id="controls">
+    <div class="ctrl-group">
+        <div class="btn" id="btn-left">◀</div>
+        <div class="btn" id="btn-right">▶</div>
+    </div>
+    <div class="ctrl-group">
+        <div class="btn" id="btn-action">⚡</div>
+        <div class="btn" id="btn-jump">▲</div>
+    </div>
+</div>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Константы мира
+    const TILE = 32;
+    const COLS = 60;
+    const ROWS = 40;
+    const GRAVITY = 0.5;
+
+    // Типы блоков: 0-воздух, 1-трава, 2-земля, 3-камень, 4-руда, 5-дерево, 6-листва
+    let world = [];
+    let selectedTool = 0; // 0: кирка, 1: блок земли, 2: меч
+    let questStage = 0;
+
+    // Игрок
+    const player = {
+        x: 10 * TILE, y: 10 * TILE, w: 22, h: 42,
+        vx: 0, vy: 0, speed: 4, jump: -9.5,
+        grounded: false, facing: 1, hp: 100,
+        dirt: 10, ore: 0, attackCooldown: 0
+    };
+
+    // NPC Гид и Враг (Слизень)
+    const guide = { x: 13 * TILE, y: 10 * TILE, w: 22, h: 42 };
+    let enemies = [
+        { x: 25 * TILE, y: 10 * TILE, w: 28, h: 22, vx: -1.5, vy: 0, hp: 50, maxHp: 50, boss: false },
+        { x: 45 * TILE, y: 10 * TILE, w: 48, h: 38, vx: -1, vy: 0, hp: 150, maxHp: 150, boss: true }
+    ];
+
+    // Генерация ландшафта в стиле Terraria
+    function generateWorld() {
+        for (let y = 0; y < ROWS; y++) {
+            world[y] = [];
+            for (let x = 0; x < COLS; x++) {
+                let surface = 14 + Math.floor(Math.sin(x * 0.2) * 2);
+                if (y < surface) world[y][x] = 0;
+                else if (y === surface) world[y][x] = 1; // Трава
+                else if (y < surface + 5) world[y][x] = 2; // Земля
+                else {
+                    // Пещеры и руда
+                    if (Math.random() < 0.15) world[y][x] = 0;
+                    else if (Math.random() < 0.08) world[y][x] = 4; // Синяя руда
+                    else world[y][x] = 3; // Камень
+                }
+            }
+        }
+        // Генерация деревьев на поверхности
+        for (let x = 4; x < COLS - 4; x += 7) {
+            let sy = 14 + Math.floor(Math.sin(x * 0.2) * 2);
+            world[sy - 1][x] = 5; world[sy - 2][x] = 5; world[sy - 3][x] = 5;
+            world[sy - 4][x] = 6; world[sy - 4][x - 1] = 6; world[sy - 4][x + 1] = 6;
+            world[sy - 5][x] = 6;
+        }
+    }
+
+    // Отрисовка пиксельных блоков с текстурой
+    function drawTile(type, px, py) {
+        if (type === 1) { // Трава
+            ctx.fillStyle = '#5d4037'; ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = '#4caf50'; ctx.fillRect(px, py, TILE, 8);
+            ctx.fillStyle = '#388e3c'; ctx.fillRect(px + 4, py + 8, 6, 4);
+        } else if (type === 2) { // Земля
+            ctx.fillStyle = '#5d4037'; ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = '#4e342e'; ctx.fillRect(px + 6, py + 6, 6, 6);
+            ctx.fillRect(px + 20, py + 18, 6, 6);
+        } else if (type === 3) { // Камень
+            ctx.fillStyle = '#607d8b'; ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = '#455a64'; ctx.fillRect(px + 4, py + 12, 12, 6);
+        } else if (type === 4) { // Магическая руда
+            ctx.fillStyle = '#607d8b'; ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = '#00e5ff'; ctx.fillRect(px + 8, py + 8, 8, 8);
+            ctx.fillRect(px + 18, py + 16, 6, 6);
+        } else if (type === 5) { // Ствол дерева
+            ctx.fillStyle = '#795548'; ctx.fillRect(px + 8, py, 16, TILE);
+        } else if (type === 6) { // Листва
+            ctx.fillStyle = '#2e7d32'; ctx.fillRect(px, py, TILE, TILE);
+        }
+    }
+
+    // Отрисовка пиксельного персонажа
+    function drawCharacter(ent, shirtColor, hairColor) {
+        // Голова
+        ctx.fillStyle = '#ffccbc'; ctx.fillRect(ent.x + 4, ent.y + 4, 14, 14);
+        // Волосы
+        ctx.fillStyle = hairColor; ctx.fillRect(ent.x + 3, ent.y, 16, 6);
+        // Глаз
+        ctx.fillStyle = '#000';
+        ctx.fillRect(ent.facing === 1 ? ent.x + 13 : ent.x + 6, ent.y + 8, 3, 3);
+        // Туловище
+        ctx.fillStyle = shirtColor; ctx.fillRect(ent.x + 4, ent.y + 18, 14, 14);
+        // Штаны
+        ctx.fillStyle = '#283593'; ctx.fillRect(ent.x + 5, ent.y + 32, 12, 10);
+    }
+
+    // Коллизии с блоками
+    function checkCollision(ent) {
+        let left = Math.floor(ent.x / TILE);
+        let right = Math.floor((ent.x + ent.w) / TILE);
+        let top = Math.floor(ent.y / TILE);
+        let bottom = Math.floor((ent.y + ent.h) / TILE);
+
+        for (let y = top; y <= bottom; y++) {
+            for (let x = left; x <= right; x++) {
+                if (world[y] && world[y][x] >= 1 && world[y][x] <= 4) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Управление
+    const keys = { left: false, right: false };
+    window.addEventListener('keydown', e => {
+        if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+        if ((e.code === 'Space' || e.code === 'KeyW') && player.grounded) {
+            player.vy = player.jump; player.grounded = false;
+        }
+    });
+    window.addEventListener('keyup', e => {
+        if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+    });
+
+    // Сенсорные кнопки
+    const bindBtn = (id, key) => {
+        const el = document.getElementById(id);
+        el.addEventListener('touchstart', e => { e.preventDefault(); keys[key] = true; });
+        el.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+    };
+    bindBtn('btn-left', 'left');
+    bindBtn('btn-right', 'right');
+    document.getElementById('btn-jump').addEventListener('touchstart', e => {
+        e.preventDefault();
+        if (player.grounded) { player.vy = player.jump; player.grounded = false; }
+    });
+    document.getElementById('btn-action').addEventListener('touchstart', e => {
+        e.preventDefault();
+        performAttack();
+    });
+
+    // Клик по экрану: копание, строительство или диалог с Гидом
+    canvas.addEventListener('pointerdown', e => {
+        const camX = player.x - canvas.width / 2;
+        const camY = player.y - canvas.height / 2;
+        const worldX = e.clientX + camX;
+        const worldY = e.clientY + camY;
+
+        // Проверка клика по Гиду
+        if (Math.hypot(worldX - guide.x, worldY - guide.y) < 60 && Math.hypot(player.x - guide.x, player.y - guide.y) < 100) {
+            openDialog();
+            return;
+        }
+
+        if (selectedTool === 2) {
+            performAttack();
+            return;
+        }
+
+        const tx = Math.floor(worldX / TILE);
+        const ty = Math.floor(worldY / TILE);
+        const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
+
+        if (dist < 130 && world[ty] && world[ty][tx] !== undefined) {
+            if (selectedTool === 0 && world[ty][tx] > 0) { // Копать
+                const block = world[ty][tx];
+                if (block === 1 || block === 2) player.dirt++;
+                if (block === 4) { player.ore++; checkQuest(); }
+                world[ty][tx] = 0;
+                updateUI();
+            } else if (selectedTool === 1 && world[ty][tx] === 0 && player.dirt > 0) { // Строить
+                world[ty][tx] = 2;
+                player.dirt--;
+                if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
+                updateUI();
+            }
+        }
+    });
+
+    function performAttack() {
+        if (player.attackCooldown > 0) return;
+        player.attackCooldown = 20;
+        const dmg = questStage >= 2 ? 35 : 15; // Усиленный меч после квеста
+
+        enemies.forEach((en, idx) => {
+            if (Math.hypot(en.x - player.x, en.y - player.y) < 75) {
+                en.hp -= dmg;
+                en.vy = -4;
+                en.vx = player.facing * 4;
+                if (en.hp <= 0) {
+                    if (en.boss) {
+                        questStage = 3;
+                        document.getElementById('quest-box').innerText = "🏆 Сюжет пройден! Вы спасли мир!";
+                        tg.showAlert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                    }
+                    enemies.splice(idx, 1);
+                }
+            }
+        });
+    }
+
+    function selectTool(idx) {
+        selectedTool = idx;
+        document.querySelectorAll('.slot').forEach((s, i) => s.classList.toggle('active', i === idx));
+    }
+
+    function openDialog() {
+        const title = document.getElementById('dialog-title');
+        const text = document.getElementById('dialog-text');
+        if (questStage === 0) {
+            questStage = 1;
+            document.getElementById('quest-box').innerText = "Квест: Добыть 5 руды (" + player.ore + "/5)";
+        } else if (questStage === 1 && player.ore >= 5) {
+            questStage = 2;
+            player.ore -= 5;
+            title.innerText = "🧙‍♂️ Гид (Клинок выкован!)";
+            text.innerText = "Отличная работа! Я перековал руду в Рунический Меч (урон x2). Теперь отправляйся на восток и победи Короля Слизней!";
+            document.getElementById('quest-box').innerText = "Квест: Победить Босса на востоке";
+            updateUI();
+        } else if (questStage === 2) {
+            text.innerText = "Босс ждёт на правом краю острова. Выбери меч и атакуй!";
+        }
+        document.getElementById('dialog').style.display = 'block';
+    }
+
+    function closeDialog() {
+        document.getElementById('dialog').style.display = 'none';
+    }
+
+    function checkQuest() {
+        if (questStage === 1) {
+            if (player.ore >= 5) {
+                document.getElementById('quest-box').innerText = "Квест: Вернись к Гиду!";
+            } else {
+                document.getElementById('quest-box').innerText = "Квест: Добыть 5 руды (" + player.ore + "/5)";
+            }
+        }
+    }
+
+    function updateUI() {
+        document.getElementById('hp').innerText = player.hp;
+        document.getElementById('ore').innerText = player.ore;
+        document.getElementById('inv-dirt').innerText = player.dirt;
+    }
+
+    // Главный игровой цикл
+    function update() {
+        if (player.attackCooldown > 0) player.attackCooldown--;
+
+        // Движение игрока
+        if (keys.left) { player.vx = -player.speed; player.facing = -1; }
+        else if (keys.right) { player.vx = player.speed; player.facing = 1; }
+        else player.vx = 0;
+
+        player.x += player.vx;
+        if (checkCollision(player)) player.x -= player.vx;
+
+        player.vy += GRAVITY;
+        player.y += player.vy;
+        player.grounded = false;
+        if (checkCollision(player)) {
+            if (player.vy > 0) player.grounded = true;
+            player.y -= player.vy;
+            player.vy = 0;
+        }
+
+        // Физика Гида
+        guide.vy = (guide.vy || 0) + GRAVITY;
+        guide.y += guide.vy;
+        if (checkCollision(guide)) { guide.y -= guide.vy; guide.vy = 0; }
+
+        // ИИ Врагов
+        enemies.forEach(en => {
+            en.vy += GRAVITY;
+            en.y += en.vy;
+            if (checkCollision(en)) {
+                if (en.vy > 0 && Math.random() < 0.03) en.vy = -7; // Прыжок слизня
+                else { en.y -= en.vy; en.vy = 0; }
+            }
+            en.x += en.vx;
+            if (checkCollision(en)) { en.x -= en.vx; en.vx *= -1; }
+
+            // Урон игроку
+            if (Math.hypot(en.x - player.x, en.y - player.y) < 30 && player.attackCooldown === 0) {
+                player.hp = Math.max(0, player.hp - (en.boss ? 15 : 5));
+                player.attackCooldown = 30;
+                updateUI();
+                if (player.hp === 0) {
+                    player.hp = 100; player.x = 10 * TILE; player.y = 8 * TILE;
+                    updateUI();
+                }
+            }
+        });
+    }
+
+    function draw() {
+        // Небо с градиентом
+        const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        grad.addColorStop(0, '#1e3c72');
+        grad.addColorStop(1, '#2a5298');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        const camX = Math.floor(player.x - canvas.width / 2);
+        const camY = Math.floor(player.y - canvas.height / 2);
+        ctx.translate(-camX, -camY);
+
+        // Отрисовка мира
+        for (let y = 0; y < ROWS; y++) {
+            for (let x = 0; x < COLS; x++) {
+                if (world[y][x] > 0) drawTile(world[y][x], x * TILE, y * TILE);
+            }
+        }
+
+        // Отрисовка Гида
+        drawCharacter(guide, '#8d6e63', '#eeeeee');
+        ctx.fillStyle = '#ffd700';
+        ctx.font = '12px monospace';
+        ctx.fillText('! Гид', guide.x - 5, guide.y - 8);
+
+        // Отрисовка Игрока
+        drawCharacter(player, '#e53935', '#4e342e');
+
+        // Анимация взмаха мечом
+        if (player.attackCooldown > 10) {
+            ctx.fillStyle = questStage >= 2 ? '#00e5ff' : '#ffffff';
+            const sx = player.facing === 1 ? player.x + player.w : player.x - 28;
+            ctx.fillRect(sx, player.y + 12, 28, 6);
+        }
+
+        // Отрисовка врагов
+        enemies.forEach(en => {
+            ctx.fillStyle = en.boss ? '#9c27b0' : '#00e676';
+            ctx.fillRect(en.x, en.y, en.w, en.h);
+            // Полоска HP врага
+            ctx.fillStyle = 'red';
+            ctx.fillRect(en.x, en.y - 8, en.w * (en.hp / en.maxHp), 4);
+        });
+
+        ctx.restore();
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    generateWorld();
+    loop();
+</script>
+</body>
+</html>
