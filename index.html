@@ -127,7 +127,14 @@
     window.addEventListener('error', (e) => {
         const box = document.getElementById('err-box');
         box.style.display = 'block';
-        box.textContent = 'Ошибка: ' + (e.message || e);
+        const loc = e.filename ? ` (${e.filename.split('/').pop()}:${e.lineno}:${e.colno})` : '';
+        box.textContent = 'Ошибка: ' + (e.message || 'Script error') + loc;
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+        const box = document.getElementById('err-box');
+        box.style.display = 'block';
+        box.textContent = 'Promise error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason);
     });
 
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
@@ -248,7 +255,7 @@
         dirt: 10, ore: 0, attackCooldown: 0
     };
 
-    const guide = { x: 13 * TILE, y: 10 * TILE, w: 22, h: 42, facing: -1 };
+    const guide = { x: 13 * TILE, y: 10 * TILE, w: 22, h: 42, facing: -1, vy: 0 };
     let enemies = [
         { x: 25 * TILE, y: 10 * TILE, w: 30, h: 22, vx: -1.5, vy: 0, hp: 50, maxHp: 50, boss: false },
         { x: 45 * TILE, y: 10 * TILE, w: 52, h: 40, vx: -1, vy: 0, hp: 150, maxHp: 150, boss: true }
@@ -480,27 +487,35 @@
 
     const bindBtn = (id, key) => {
         const el = document.getElementById(id);
-        el.addEventListener('touchstart', e => { e.preventDefault(); keys[key] = true; });
-        el.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
-        el.addEventListener('mousedown', () => { keys[key] = true; });
-        el.addEventListener('mouseup', () => { keys[key] = false; });
+        el.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); keys[key] = true; }, { passive: false });
+        el.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); keys[key] = false; }, { passive: false });
+        el.addEventListener('touchcancel', () => { keys[key] = false; });
+        el.addEventListener('mousedown', e => { e.stopPropagation(); keys[key] = true; });
+        window.addEventListener('mouseup', () => { keys[key] = false; });
     };
     bindBtn('btn-left', 'left');
     bindBtn('btn-right', 'right');
+
     document.getElementById('btn-jump').addEventListener('touchstart', e => {
-        e.preventDefault();
+        e.preventDefault(); e.stopPropagation();
+        if (player.grounded) { player.vy = player.jump; player.grounded = false; }
+    }, { passive: false });
+    document.getElementById('btn-jump').addEventListener('mousedown', e => {
+        e.stopPropagation();
         if (player.grounded) { player.vy = player.jump; player.grounded = false; }
     });
-    document.getElementById('btn-jump').addEventListener('mousedown', () => {
-        if (player.grounded) { player.vy = player.jump; player.grounded = false; }
-    });
+
     document.getElementById('btn-action').addEventListener('touchstart', e => {
-        e.preventDefault();
+        e.preventDefault(); e.stopPropagation();
+        performAttack();
+    }, { passive: false });
+    document.getElementById('btn-action').addEventListener('mousedown', e => {
+        e.stopPropagation();
         performAttack();
     });
-    document.getElementById('btn-action').addEventListener('mousedown', () => performAttack());
 
     canvas.addEventListener('pointerdown', e => {
+        if (typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return;
         const camX = Math.floor(player.x - canvas.width / 2);
         const camY = Math.floor(player.y - canvas.height / 2);
         const worldX = e.clientX + camX;
@@ -520,14 +535,14 @@
         const ty = Math.floor(worldY / TILE);
         const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
 
-        if (dist < 130 && world[ty] && world[ty][tx] !== undefined) {
-            if (selectedTool === 0 && world[ty][tx] > 0) {
-                const block = world[ty][tx];
+        if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
+            const block = world[ty][tx];
+            if (selectedTool === 0 && block > 0) {
                 if (block === 1 || block === 2) player.dirt++;
                 if (block === 4) { player.ore++; checkQuest(); }
                 world[ty][tx] = 0;
                 updateUI();
-            } else if (selectedTool === 1 && world[ty][tx] === 0 && player.dirt > 0) {
+            } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
                 world[ty][tx] = 2;
                 player.dirt--;
                 if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
@@ -541,25 +556,32 @@
         player.attackCooldown = 20;
         const dmg = questStage >= 2 ? 35 : 15;
 
-        enemies.forEach((en, idx) => {
+        for (let idx = enemies.length - 1; idx >= 0; idx--) {
+            const en = enemies[idx];
             if (Math.hypot(en.x - player.x, en.y - player.y) < 75) {
                 en.hp -= dmg;
                 en.vy = -4;
                 en.vx = player.facing * 4;
                 if (en.hp <= 0) {
-                    if (en.boss) {
-                        questStage = 3;
-                        document.getElementById('quest-box').innerText = "🏆 Сюжет пройден! Вы спасли мир!";
-                        if (tg && tg.showAlert) {
-                            tg.showAlert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
-                        } else {
-                            alert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
-                        }
-                    }
+                    const isBoss = Boolean(en.boss);
                     enemies.splice(idx, 1);
+                    if (isBoss) {
+                        questStage = 3;
+                        const qBox = document.getElementById('quest-box');
+                        if (qBox) qBox.innerText = "🏆 Сюжет пройден! Вы спасли мир!";
+                        setTimeout(() => {
+                            if (tg && typeof tg.showAlert === 'function') {
+                                try {
+                                    tg.showAlert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                                    return;
+                                } catch (_) {}
+                            }
+                            alert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                        }, 10);
+                    }
                 }
             }
-        });
+        }
     }
 
     function selectTool(idx) {
@@ -669,7 +691,7 @@
 
         for (let y = startRow; y <= endRow; y++) {
             for (let x = startCol; x <= endCol; x++) {
-                const type = world[y][x];
+                const type = world[y] ? world[y][x] : 0;
                 if (type > 0 && tileSprites[type]) {
                     const px = x * TILE;
                     const py = y * TILE;
@@ -723,7 +745,7 @@
         } catch (err) {
             const box = document.getElementById('err-box');
             box.style.display = 'block';
-            box.textContent = 'Ошибка кадра: ' + err.message;
+            box.textContent = 'Ошибка кадра: ' + (err && err.message ? err.message : err);
             return;
         }
         requestAnimationFrame(loop);
