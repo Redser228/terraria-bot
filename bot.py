@@ -6,7 +6,7 @@ from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER"
 # Ссылка на размещенный файл index.html (обязательно HTTPS)
-GAME_URL = "https://Redser228.github.io/terraria_bot/?v=2"
+GAME_URL = "https://Redser228.github.io/terraria_bot/"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
