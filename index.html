@@ -81,11 +81,19 @@
             text-shadow: 1px 1px 0 #000;
         }
         .btn:active { background: rgba(255, 213, 79, 0.45); border-color: #ffd54f; transform: translateY(2px); }
+
+        #err-box {
+            position: fixed; top: 115px; left: 10px; right: 10px;
+            background: rgba(183, 28, 28, 0.92); border: 2px solid #ff8a80;
+            padding: 8px 10px; border-radius: 6px; font-size: 11px;
+            display: none; z-index: 999; word-break: break-word;
+        }
     </style>
 </head>
 <body>
 
 <canvas id="game"></canvas>
+<div id="err-box"></div>
 
 <div id="ui">
     <div class="panel">❤️ <span id="hp">100</span> | 💎 <span id="ore">0</span></div>
@@ -116,22 +124,29 @@
 </div>
 
 <script>
-    const tg = window.Telegram.WebApp;
-    tg.expand();
+    window.addEventListener('error', (e) => {
+        const box = document.getElementById('err-box');
+        box.style.display = 'block';
+        box.textContent = 'Ошибка: ' + (e.message || e);
+    });
+
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) {
+        try { tg.expand(); } catch (_) {}
+    }
 
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
 
     function resize() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        canvas.width = Math.max(1, window.innerWidth || 360);
+        canvas.height = Math.max(1, window.innerHeight || 640);
         ctx.imageSmoothingEnabled = false;
     }
     window.addEventListener('resize', resize);
     resize();
 
-    // Константы мира
-    const TILE = 32; // Каждый тайл рендерится из сетки 16x16 с масштабом x2
+    const TILE = 32;
     const COLS = 60;
     const ROWS = 40;
     const GRAVITY = 0.5;
@@ -156,67 +171,57 @@
         return c;
     }
 
+    function drawStoneBase(g) {
+        g.fillStyle = '#546e7a'; g.fillRect(0, 0, 16, 16);
+        g.fillStyle = '#607d8b'; g.fillRect(1, 1, 14, 14);
+        g.fillStyle = '#78909c';
+        g.fillRect(1, 1, 6, 2); g.fillRect(9, 7, 5, 2); g.fillRect(2, 11, 5, 2);
+        g.fillStyle = '#37474f';
+        g.fillRect(0, 5, 8, 1); g.fillRect(7, 6, 1, 4);
+        g.fillRect(6, 10, 9, 1); g.fillRect(12, 1, 1, 4);
+        g.fillStyle = '#263238';
+        g.fillRect(3, 5, 3, 1); g.fillRect(9, 10, 4, 1);
+    }
+
     function initTextures() {
-        // 1: Блок травы (детализированный дерн + травинки)
         tileSprites[1] = createPixelSprite(g => {
             g.fillStyle = '#5d3a24'; g.fillRect(0, 0, 16, 16);
-            // Текстура земли
             g.fillStyle = '#472b1a';
             [[2,6],[5,9],[11,7],[13,12],[3,13],[8,11],[10,14]].forEach(([x,y]) => g.fillRect(x,y,2,2));
             g.fillStyle = '#73492e';
             [[1,9],[7,6],[12,9],[5,14]].forEach(([x,y]) => g.fillRect(x,y,2,1));
-            // Травяная шапка
             g.fillStyle = '#2e7d32'; g.fillRect(0, 0, 16, 4);
             g.fillStyle = '#43a047'; g.fillRect(0, 0, 16, 3);
             g.fillStyle = '#66bb6a'; g.fillRect(0, 0, 16, 1);
-            // Свисающие травинки
             g.fillStyle = '#2e7d32';
             [1, 4, 7, 10, 14].forEach((x, i) => g.fillRect(x, 4, 1, (i % 2) + 1));
             g.fillStyle = '#1b5e20';
             [2, 8, 12].forEach(x => g.fillRect(x, 4, 1, 2));
         });
 
-        // 2: Земля
         tileSprites[2] = createPixelSprite(g => {
             g.fillStyle = '#5d3a24'; g.fillRect(0, 0, 16, 16);
             g.fillStyle = '#472b1a';
             [[1,2],[6,1],[12,3],[3,7],[9,6],[14,8],[2,12],[7,13],[12,12]].forEach(([x,y]) => g.fillRect(x,y,2,2));
             g.fillStyle = '#73492e';
             [[4,3],[10,2],[1,9],[7,10],[13,14],[5,15]].forEach(([x,y]) => g.fillRect(x,y,2,1));
-            // Мелкие камешки в земле
             g.fillStyle = '#78909c'; g.fillRect(11, 10, 2, 1); g.fillRect(4, 5, 1, 1);
         });
 
-        // 3: Камень (слоистая порода с трещинами)
         tileSprites[3] = createPixelSprite(g => {
-            g.fillStyle = '#546e7a'; g.fillRect(0, 0, 16, 16);
-            g.fillStyle = '#607d8b'; g.fillRect(1, 1, 14, 14);
-            // Блики
-            g.fillStyle = '#78909c';
-            g.fillRect(1, 1, 6, 2); g.fillRect(9, 7, 5, 2); g.fillRect(2, 11, 5, 2);
-            // Трещины и тени
-            g.fillStyle = '#37474f';
-            g.fillRect(0, 5, 8, 1); g.fillRect(7, 6, 1, 4);
-            g.fillRect(6, 10, 9, 1); g.fillRect(12, 1, 1, 4);
-            g.fillStyle = '#263238';
-            g.fillRect(3, 5, 3, 1); g.fillRect(9, 10, 4, 1);
+            drawStoneBase(g);
         });
 
-        // 4: Магическая руда (камень + светящиеся кристаллы)
         tileSprites[4] = createPixelSprite(g => {
-            g.drawImage(tileSprites[3], 0, 0);
-            // Темная окантовка кристаллов
+            drawStoneBase(g);
             g.fillStyle = '#004d40';
             g.fillRect(2, 2, 5, 5); g.fillRect(9, 8, 5, 5); g.fillRect(3, 10, 4, 4);
-            // Яркий бирюзовый кристалл
             g.fillStyle = '#00bcd4';
             g.fillRect(3, 3, 3, 3); g.fillRect(10, 9, 3, 3); g.fillRect(4, 11, 2, 2);
-            // Белый блик
             g.fillStyle = '#e0f7fa';
             g.fillRect(3, 3, 1, 1); g.fillRect(10, 9, 1, 1);
         });
 
-        // 5: Ствол дерева (текстура коры)
         tileSprites[5] = createPixelSprite(g => {
             g.fillStyle = '#4e342e'; g.fillRect(3, 0, 10, 16);
             g.fillStyle = '#6d4c41'; g.fillRect(4, 0, 8, 16);
@@ -226,7 +231,6 @@
             g.fillRect(7, 3, 1, 5); g.fillRect(10, 9, 1, 5);
         });
 
-        // 6: Пышная листва
         tileSprites[6] = createPixelSprite(g => {
             g.fillStyle = '#1b5e20'; g.fillRect(1, 1, 14, 14);
             g.fillStyle = '#2e7d32'; g.fillRect(0, 2, 16, 12); g.fillRect(2, 0, 12, 16);
@@ -237,22 +241,19 @@
         });
     }
 
-    // Игрок
     const player = {
         x: 10 * TILE, y: 10 * TILE, w: 22, h: 42,
         vx: 0, vy: 0, speed: 4, jump: -9.5,
         grounded: false, facing: 1, hp: 100,
-        dirt: 10, ore: 0, attackCooldown: 0, walkFrame: 0
+        dirt: 10, ore: 0, attackCooldown: 0
     };
 
-    // NPC Гид и Враги
     const guide = { x: 13 * TILE, y: 10 * TILE, w: 22, h: 42, facing: -1 };
     let enemies = [
         { x: 25 * TILE, y: 10 * TILE, w: 30, h: 22, vx: -1.5, vy: 0, hp: 50, maxHp: 50, boss: false },
         { x: 45 * TILE, y: 10 * TILE, w: 52, h: 40, vx: -1, vy: 0, hp: 150, maxHp: 150, boss: true }
     ];
 
-    // Облака для параллакс-фона
     const clouds = Array.from({ length: 12 }, (_, i) => ({
         x: i * 190 + Math.random() * 80,
         y: 35 + (i % 4) * 32,
@@ -260,7 +261,6 @@
         speed: 0.15 + (i % 3) * 0.08
     }));
 
-    // Генерация ландшафта
     function generateWorld() {
         for (let y = 0; y < ROWS; y++) {
             world[y] = [];
@@ -276,7 +276,6 @@
                 }
             }
         }
-        // Деревья
         for (let x = 4; x < COLS - 4; x += 7) {
             let sy = 14 + Math.floor(Math.sin(x * 0.2) * 2);
             world[sy - 1][x] = 5; world[sy - 2][x] = 5; world[sy - 3][x] = 5;
@@ -285,14 +284,10 @@
         }
     }
 
-    // ==========================================
-    // ОТРИСОВКА ДЕТАЛИЗИРОВАННОГО ЗАДНЕГО ФОНА
-    // ==========================================
     function drawBackground(camX, camY) {
         const w = canvas.width;
         const h = canvas.height;
 
-        // 1. Небо (насыщенный дневной градиент Terraria)
         const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
         skyGrad.addColorStop(0, '#1e88e5');
         skyGrad.addColorStop(0.55, '#64b5f6');
@@ -300,7 +295,6 @@
         ctx.fillStyle = skyGrad;
         ctx.fillRect(0, 0, w, h);
 
-        // 2. Пиксельное Солнце
         const sunX = Math.floor(w * 0.78 - camX * 0.02);
         const sunY = Math.floor(75 - camY * 0.02);
         ctx.fillStyle = 'rgba(255, 238, 88, 0.25)';
@@ -310,7 +304,6 @@
         ctx.fillStyle = '#fff9c4';
         ctx.fillRect(sunX + 6, sunY + 6, 24, 24);
 
-        // 3. Пиксельные облака
         clouds.forEach(c => {
             c.x += c.speed;
             if (c.x > COLS * TILE) c.x = -150;
@@ -323,19 +316,15 @@
             ctx.fillRect(cx + 12, cy + 2, c.w - 28, 6);
         });
 
-        // 4. Дальний слой гор (Параллакс 0.25)
-        ctx.fillStyle = '#5c7cfa';
         for (let i = -1; i < 8; i++) {
             const mx = Math.floor(i * 220 - (camX * 0.25) % 220);
             const my = Math.floor(h * 0.58 - camY * 0.15);
-            // Ступенчатая пиксельная гора
             for (let step = 0; step < 12; step++) {
-                ctx.fillStyle = step < 3 ? '#e3f2fd' : '#5472d3'; // Заснеженные вершины
+                ctx.fillStyle = step < 3 ? '#e3f2fd' : '#5472d3';
                 ctx.fillRect(mx + 110 - step * 10, my + step * 12, step * 20, 12);
             }
         }
 
-        // 5. Средний слой лесных холмов (Параллакс 0.45)
         for (let i = -1; i < 10; i++) {
             const hx = Math.floor(i * 160 - (camX * 0.45) % 160);
             const hy = Math.floor(h * 0.68 - camY * 0.25);
@@ -347,12 +336,10 @@
             ctx.fillRect(hx + 45, hy - 28, 70, 12);
         }
 
-        // 6. Подземный фон (кирпично-земляная стена ниже уровня поверхности)
         const undergroundY = Math.floor(15 * TILE - camY);
         if (undergroundY < h) {
             ctx.fillStyle = '#261811';
             ctx.fillRect(0, Math.max(0, undergroundY), w, h);
-            // Текстура фоновой стены подземелья
             ctx.fillStyle = '#1c110c';
             const startX = -Math.floor((camX * 0.8) % 32);
             for (let by = Math.max(0, undergroundY); by < h; by += 32) {
@@ -364,70 +351,56 @@
         }
     }
 
-    // ==========================================
-    // ОТРИСОВКА ЧЕТКИХ ПИКСЕЛЬНЫХ ПЕРСОНАЖЕЙ
-    // ==========================================
     function drawCharacter(ent, isGuide) {
         const px = Math.floor(ent.x);
         const py = Math.floor(ent.y);
         const dir = ent.facing || 1;
         const step = !isGuide && Math.abs(ent.vx) > 0.1 ? Math.sin(tick * 0.35) * 3 : 0;
 
-        // Контур (обводка в 2px для четкости на любом фоне)
         ctx.fillStyle = '#111111';
         ctx.fillRect(px + 2, py - 2, 18, 44);
 
-        // Волосы и прическа
         ctx.fillStyle = isGuide ? '#cfd8dc' : '#4e342e';
         ctx.fillRect(px + 3, py, 16, 7);
-        ctx.fillRect(dir === 1 ? px + 2 : px + 16, py + 4, 4, 8); // Затылок
+        ctx.fillRect(dir === 1 ? px + 2 : px + 16, py + 4, 4, 8);
 
-        // Лицо
         ctx.fillStyle = '#ffccbc';
         ctx.fillRect(px + 4, py + 6, 14, 12);
-        // Румянец / тень
         ctx.fillStyle = '#e6a18c';
         ctx.fillRect(px + 4, py + 15, 14, 3);
 
-        // Глаз
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(dir === 1 ? px + 12 : px + 6, py + 9, 4, 4);
         ctx.fillStyle = isGuide ? '#1565c0' : '#212121';
         ctx.fillRect(dir === 1 ? px + 14 : px + 6, py + 10, 2, 3);
 
-        // Туловище (туника / броня)
         ctx.fillStyle = isGuide ? '#6d4c41' : '#d32f2f';
         ctx.fillRect(px + 3, py + 18, 16, 14);
-        // Пояс с пряжкой
         ctx.fillStyle = '#3e2723';
         ctx.fillRect(px + 3, py + 28, 16, 3);
         ctx.fillStyle = '#ffd54f';
         ctx.fillRect(px + 9, py + 28, 4, 3);
 
-        // Рука
         ctx.fillStyle = '#ffccbc';
         ctx.fillRect(px + 8, py + 20, 6, 9);
 
-        // Ноги с анимацией шага
         ctx.fillStyle = isGuide ? '#4e342e' : '#1a237e';
         ctx.fillRect(px + 4, py + 31, 6, 9 + step);
         ctx.fillRect(px + 12, py + 31, 6, 9 - step);
 
-        // Сапоги
         ctx.fillStyle = '#212121';
         ctx.fillRect(px + 4, py + 39 + step, 6, 3);
         ctx.fillRect(px + 12, py + 39 - step, 6, 3);
 
-        // Отображение выбранного инструмента в руке игрока
         if (!isGuide) {
             const handX = dir === 1 ? px + 14 : px - 10;
             const handY = py + 18;
-            if (selectedTool === 0) { // Кирка
+            if (selectedTool === 0) {
                 ctx.fillStyle = '#795548';
                 ctx.fillRect(dir === 1 ? handX : handX + 8, handY - 4, 3, 14);
                 ctx.fillStyle = '#90a4ae';
                 ctx.fillRect(handX - 3, handY - 6, 16, 3);
-            } else if (selectedTool === 2) { // Меч
+            } else if (selectedTool === 2) {
                 const isUpgraded = questStage >= 2;
                 ctx.fillStyle = isUpgraded ? '#00e5ff' : '#cfd8dc';
                 ctx.fillRect(dir === 1 ? handX + 2 : handX + 6, handY - 12, 4, 18);
@@ -437,33 +410,27 @@
         }
     }
 
-    // Отрисовка детализированных слизней
     function drawSlime(en) {
         const sx = Math.floor(en.x);
         const sy = Math.floor(en.y);
         const squish = Math.sin(tick * 0.2) * 2;
 
-        // Контур
         ctx.fillStyle = '#000000';
         ctx.fillRect(sx - 2, sy + 2 - squish, en.w + 4, en.h + squish);
 
-        // Тело слизня
         ctx.fillStyle = en.boss ? '#7b1fa2' : '#00c853';
         ctx.fillRect(sx, sy + 4 - squish, en.w, en.h - 2 + squish);
         ctx.fillStyle = en.boss ? '#ab47bc' : '#69f0ae';
         ctx.fillRect(sx + 4, sy + 2 - squish, en.w - 8, en.h - 6 + squish);
 
-        // Блик
         ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
         ctx.fillRect(sx + 6, sy + 6 - squish, 6, 4);
 
-        // Глаза
         ctx.fillStyle = '#000000';
         const eyeOffset = en.vx > 0 ? en.w - 16 : 6;
         ctx.fillRect(sx + eyeOffset, sy + 10 - squish, 3, 4);
         ctx.fillRect(sx + eyeOffset + 7, sy + 10 - squish, 3, 4);
 
-        // Золотая корона у Босса
         if (en.boss) {
             const cx = sx + Math.floor(en.w / 2) - 10;
             const cy = sy - 10 - squish;
@@ -476,14 +443,12 @@
             ctx.fillRect(cx + 9, cy + 5, 2, 2);
         }
 
-        // Четкая полоска HP
         ctx.fillStyle = '#111111';
         ctx.fillRect(sx - 1, sy - 16, en.w + 2, 6);
         ctx.fillStyle = '#e53935';
         ctx.fillRect(sx, sy - 15, Math.floor(en.w * (en.hp / en.maxHp)), 4);
     }
 
-    // Коллизии
     function checkCollision(ent) {
         let left = Math.floor(ent.x / TILE);
         let right = Math.floor((ent.x + ent.w) / TILE);
@@ -500,7 +465,6 @@
         return false;
     }
 
-    // Управление
     const keys = { left: false, right: false };
     window.addEventListener('keydown', e => {
         if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
@@ -518,6 +482,8 @@
         const el = document.getElementById(id);
         el.addEventListener('touchstart', e => { e.preventDefault(); keys[key] = true; });
         el.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+        el.addEventListener('mousedown', () => { keys[key] = true; });
+        el.addEventListener('mouseup', () => { keys[key] = false; });
     };
     bindBtn('btn-left', 'left');
     bindBtn('btn-right', 'right');
@@ -525,10 +491,14 @@
         e.preventDefault();
         if (player.grounded) { player.vy = player.jump; player.grounded = false; }
     });
+    document.getElementById('btn-jump').addEventListener('mousedown', () => {
+        if (player.grounded) { player.vy = player.jump; player.grounded = false; }
+    });
     document.getElementById('btn-action').addEventListener('touchstart', e => {
         e.preventDefault();
         performAttack();
     });
+    document.getElementById('btn-action').addEventListener('mousedown', () => performAttack());
 
     canvas.addEventListener('pointerdown', e => {
         const camX = Math.floor(player.x - canvas.width / 2);
@@ -580,7 +550,11 @@
                     if (en.boss) {
                         questStage = 3;
                         document.getElementById('quest-box').innerText = "🏆 Сюжет пройден! Вы спасли мир!";
-                        tg.showAlert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                        if (tg && tg.showAlert) {
+                            tg.showAlert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                        } else {
+                            alert("Поздравляем! Страж повержен, вы прошли сюжетную главу!");
+                        }
                     }
                     enemies.splice(idx, 1);
                 }
@@ -632,7 +606,6 @@
         document.getElementById('inv-dirt').innerText = player.dirt;
     }
 
-    // Обновление физики
     function update() {
         tick++;
         if (player.attackCooldown > 0) player.attackCooldown--;
@@ -653,7 +626,6 @@
             player.vy = 0;
         }
 
-        // Гид поворачивается к игроку
         guide.facing = player.x < guide.x ? -1 : 1;
         guide.vy = (guide.vy || 0) + GRAVITY;
         guide.y += guide.vy;
@@ -681,18 +653,15 @@
         });
     }
 
-    // Рендер сцены
     function draw() {
         const camX = Math.floor(player.x - canvas.width / 2);
         const camY = Math.floor(player.y - canvas.height / 2);
 
-        // Отрисовка многослойного фона
         drawBackground(camX, camY);
 
         ctx.save();
         ctx.translate(-camX, -camY);
 
-        // Отрисовка только видимых на экране блоков для 60 FPS
         const startCol = Math.max(0, Math.floor(camX / TILE) - 1);
         const endCol = Math.min(COLS - 1, Math.ceil((camX + canvas.width) / TILE) + 1);
         const startRow = Math.max(0, Math.floor(camY / TILE) - 1);
@@ -706,7 +675,6 @@
                     const py = y * TILE;
                     ctx.drawImage(tileSprites[type], px, py, TILE, TILE);
 
-                    // Пиксельная обводка краев, соприкасающихся с воздухом
                     if (type <= 4) {
                         ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
                         if (y > 0 && world[y - 1][x] === 0) ctx.fillRect(px, py, TILE, 2);
@@ -715,7 +683,6 @@
                         if (x < COLS - 1 && world[y][x + 1] === 0) ctx.fillRect(px + TILE - 2, py, 2, TILE);
                     }
 
-                    // Затемнение глубины (атмосфера пещер)
                     if (y > 18) {
                         const darkness = Math.min(0.65, (y - 18) * 0.035);
                         ctx.fillStyle = `rgba(10, 12, 22, ${darkness})`;
@@ -725,7 +692,6 @@
             }
         }
 
-        // Отрисовка Гида и его маркера
         drawCharacter(guide, true);
         ctx.fillStyle = '#000000';
         ctx.font = 'bold 12px monospace';
@@ -733,10 +699,8 @@
         ctx.fillStyle = '#ffd54f';
         ctx.fillText('! Гид', Math.floor(guide.x - 6), Math.floor(guide.y - 10));
 
-        // Отрисовка Игрока
         drawCharacter(player, false);
 
-        // Четкий пиксельный след от взмаха мечом
         if (player.attackCooldown > 10) {
             const isUpgraded = questStage >= 2;
             const sx = player.facing === 1 ? Math.floor(player.x + player.w) : Math.floor(player.x - 32);
@@ -747,15 +711,21 @@
             ctx.fillRect(sx, sy + 4, 32, 4);
         }
 
-        // Отрисовка врагов
         enemies.forEach(en => drawSlime(en));
 
         ctx.restore();
     }
 
     function loop() {
-        update();
-        draw();
+        try {
+            update();
+            draw();
+        } catch (err) {
+            const box = document.getElementById('err-box');
+            box.style.display = 'block';
+            box.textContent = 'Ошибка кадра: ' + err.message;
+            return;
+        }
         requestAnimationFrame(loop);
     }
 
