@@ -124,19 +124,6 @@
 </div>
 
 <script>
-    window.addEventListener('error', (e) => {
-        const box = document.getElementById('err-box');
-        box.style.display = 'block';
-        const loc = e.filename ? ` (${e.filename.split('/').pop()}:${e.lineno}:${e.colno})` : '';
-        box.textContent = 'Ошибка: ' + (e.message || 'Script error') + loc;
-    });
-
-    window.addEventListener('unhandledrejection', (e) => {
-        const box = document.getElementById('err-box');
-        box.style.display = 'block';
-        box.textContent = 'Promise error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason);
-    });
-
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     if (tg) {
         try { tg.expand(); } catch (_) {}
@@ -515,40 +502,42 @@
     });
 
     canvas.addEventListener('pointerdown', e => {
-        if (typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return;
-        const camX = Math.floor(player.x - canvas.width / 2);
-        const camY = Math.floor(player.y - canvas.height / 2);
-        const worldX = e.clientX + camX;
-        const worldY = e.clientY + camY;
+        try {
+            if (!e || !Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
+            const camX = Math.floor(player.x - canvas.width / 2);
+            const camY = Math.floor(player.y - canvas.height / 2);
+            const worldX = e.clientX + camX;
+            const worldY = e.clientY + camY;
 
-        if (Math.hypot(worldX - guide.x, worldY - guide.y) < 60 && Math.hypot(player.x - guide.x, player.y - guide.y) < 100) {
-            openDialog();
-            return;
-        }
-
-        if (selectedTool === 2) {
-            performAttack();
-            return;
-        }
-
-        const tx = Math.floor(worldX / TILE);
-        const ty = Math.floor(worldY / TILE);
-        const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
-
-        if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
-            const block = world[ty][tx];
-            if (selectedTool === 0 && block > 0) {
-                if (block === 1 || block === 2) player.dirt++;
-                if (block === 4) { player.ore++; checkQuest(); }
-                world[ty][tx] = 0;
-                updateUI();
-            } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
-                world[ty][tx] = 2;
-                player.dirt--;
-                if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
-                updateUI();
+            if (Math.hypot(worldX - guide.x, worldY - guide.y) < 60 && Math.hypot(player.x - guide.x, player.y - guide.y) < 100) {
+                openDialog();
+                return;
             }
-        }
+
+            if (selectedTool === 2) {
+                performAttack();
+                return;
+            }
+
+            const tx = Math.floor(worldX / TILE);
+            const ty = Math.floor(worldY / TILE);
+            const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
+
+            if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
+                const block = world[ty][tx];
+                if (selectedTool === 0 && block > 0) {
+                    if (block === 1 || block === 2) player.dirt++;
+                    if (block === 4) { player.ore++; checkQuest(); }
+                    world[ty][tx] = 0;
+                    updateUI();
+                } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
+                    world[ty][tx] = 2;
+                    player.dirt--;
+                    if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
+                    updateUI();
+                }
+            }
+        } catch (_) {}
     });
 
     function performAttack() {
@@ -744,8 +733,10 @@
             draw();
         } catch (err) {
             const box = document.getElementById('err-box');
-            box.style.display = 'block';
-            box.textContent = 'Ошибка кадра: ' + (err && err.message ? err.message : err);
+            if (box) {
+                box.style.display = 'block';
+                box.textContent = 'Ошибка кадра: ' + (err && err.message ? err.message : err);
+            }
             return;
         }
         requestAnimationFrame(loop);
