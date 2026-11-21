@@ -112,7 +112,6 @@
     <div class="panel" id="quest-box">Квест: Поговори с Гидом</div>
 </div>
 
-
 <div id="hotbar">
     <div class="slot active" onclick="selectTool(0)" id="slot-0">⛏️<br>Кирка</div>
     <div class="slot" onclick="selectTool(1)" id="slot-1">🟫<br><span id="inv-dirt">10</span></div>
@@ -796,6 +795,36 @@
         performAttack();
     });
 
+    function isSolidBlock(type) {
+        return type >= 1 && type <= 4;
+    }
+
+    function hasLineOfSight(fromX, fromY, targetTx, targetTy) {
+        const targetCenterX = targetTx * TILE + TILE / 2;
+        const targetCenterY = targetTy * TILE + TILE / 2;
+        const dx = targetCenterX - fromX;
+        const dy = targetCenterY - fromY;
+        const distance = Math.hypot(dx, dy);
+        const stepSize = TILE * 0.25;
+        const steps = Math.max(1, Math.ceil(distance / stepSize));
+
+        for (let i = 1; i < steps; i++) {
+            const t = i / steps;
+            const px = fromX + dx * t;
+            const py = fromY + dy * t;
+            const sampleTx = Math.floor(px / TILE);
+            const sampleTy = Math.floor(py / TILE);
+
+            if (sampleTx === targetTx && sampleTy === targetTy) {
+                break;
+            }
+            if (isSolidBlock(getTile(sampleTx, sampleTy))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     function handleWorldActionAt(clientX, clientY) {
         if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
         const camX = Math.floor(player.x - canvas.width / 2);
@@ -815,11 +844,16 @@
 
         const tx = Math.floor(worldX / TILE);
         const ty = Math.floor(worldY / TILE);
-        const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
+        const playerCenterX = player.x + player.w / 2;
+        const playerCenterY = player.y + player.h / 2;
+        const dist = Math.hypot(worldX - playerCenterX, worldY - playerCenterY);
 
         if (dist < 135 && ty >= 0 && ty < ROWS) {
             const block = getTile(tx, ty);
             if (selectedTool === 0 && block > 0) {
+                if (!hasLineOfSight(playerCenterX, playerCenterY, tx, ty)) {
+                    return;
+                }
                 if (block === 1 || block === 2) player.dirt++;
                 if (block === 4) { player.ore++; checkQuest(); }
                 setTile(tx, ty, 0);
