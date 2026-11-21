@@ -23,7 +23,8 @@
         /* Интерфейс в стиле Terraria */
         #ui {
             position: absolute; top: 10px; left: 10px; right: 10px;
-            display: flex; justify-content: space-between; pointer-events: none;
+            display: flex; justify-content: space-between; gap: 8px; pointer-events: none;
+            flex-wrap: wrap;
         }
         .panel {
             background: rgba(24, 28, 52, 0.88);
@@ -97,6 +98,7 @@
 
 <div id="ui">
     <div class="panel">❤️ <span id="hp">100</span> | 💎 <span id="ore">0</span></div>
+    <div class="panel" id="time-box">☀️ День</div>
     <div class="panel" id="quest-box">Квест: Поговори с Гидом</div>
 </div>
 
@@ -144,6 +146,12 @@
     const COLS = 60;
     const ROWS = 40;
     const GRAVITY = 0.5;
+
+    // Цикл дня и ночи: 0.0..0.55 — день/закат, 0.55..1.0 — ночь/рассвет
+    const DAY_CYCLE_DURATION = 60 * 60; // ~60 сек при 60 FPS
+    let dayTime = 0.15;
+    let wasNight = false;
+    let nightSpawnTimer = 0;
 
     let world = [];
     let selectedTool = 0;
@@ -244,8 +252,8 @@
 
     const guide = { x: 13 * TILE, y: 10 * TILE, w: 22, h: 42, facing: -1, vy: 0 };
     let enemies = [
-        { x: 25 * TILE, y: 10 * TILE, w: 30, h: 22, vx: -1.5, vy: 0, hp: 50, maxHp: 50, boss: false },
-        { x: 45 * TILE, y: 10 * TILE, w: 52, h: 40, vx: -1, vy: 0, hp: 150, maxHp: 150, boss: true }
+        { x: 25 * TILE, y: 10 * TILE, w: 30, h: 22, vx: -1.5, vy: 0, hp: 50, maxHp: 50, boss: false, nightMob: false },
+        { x: 45 * TILE, y: 10 * TILE, w: 52, h: 40, vx: -1, vy: 0, hp: 150, maxHp: 150, boss: true, nightMob: false }
     ];
 
     const clouds = Array.from({ length: 12 }, (_, i) => ({
@@ -254,6 +262,77 @@
         w: 70 + (i % 3) * 30,
         speed: 0.15 + (i % 3) * 0.08
     }));
+
+    const stars = Array.from({ length: 45 }, (_, i) => ({
+        x: (i * 97) % 1200,
+        y: (i * 53) % 260,
+        size: (i % 2) + 2,
+        twinkle: i * 0.7
+    }));
+
+    function isNight() {
+        return dayTime >= 0.55 && dayTime < 0.92;
+    }
+
+    function getNightDarkness() {
+        // 0 = яркий день, ~0.68 = глубокая ночь
+        if (dayTime < 0.45) return 0;
+        if (dayTime < 0.58) return ((dayTime - 0.45) / 0.13) * 0.68;
+        if (dayTime < 0.88) return 0.68;
+        if (dayTime < 1.0) return (1 - (dayTime - 0.88) / 0.12) * 0.68;
+        return 0;
+    }
+
+    function updateDayCycle() {
+        dayTime = (dayTime + 1 / DAY_CYCLE_DURATION) % 1;
+        const nightNow = isNight();
+        const timeBox = document.getElementById('time-box');
+
+        if (timeBox) {
+            if (dayTime < 0.45) timeBox.textContent = '☀️ День';
+            else if (dayTime < 0.58) timeBox.textContent = '🌅 Закат';
+            else if (dayTime < 0.88) timeBox.textContent = '🌙 Ночь';
+            else timeBox.textContent = '🌄 Рассвет';
+        }
+
+        if (nightNow && !wasNight) {
+            // При наступлении ночи добавляем пару ночных слизней поодаль от игрока
+            spawnNightEnemy();
+            spawnNightEnemy();
+        } else if (!nightNow && wasNight) {
+            // Днём ночные монстры сгорают
+            enemies = enemies.filter(en => !en.nightMob);
+        }
+        wasNight = nightNow;
+
+        if (nightNow) {
+            nightSpawnTimer++;
+            if (nightSpawnTimer >= 420) {
+                nightSpawnTimer = 0;
+                const nonBossCount = enemies.filter(e => !e.boss).length;
+                if (nonBossCount < 6) spawnNightEnemy();
+            }
+        } else {
+            nightSpawnTimer = 0;
+        }
+    }
+
+    function spawnNightEnemy() {
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const spawnCol = Math.max(3, Math.min(COLS - 4, Math.floor(player.x / TILE) + side * 12));
+        enemies.push({
+            x: spawnCol * TILE,
+            y: 6 * TILE,
+            w: 32,
+            h: 24,
+            vx: -side * 1.8,
+            vy: 0,
+            hp: 65,
+            maxHp: 65,
+            boss: false,
+            nightMob: true
+        });
+    }
 
     function generateWorld() {
         for (let y = 0; y < ROWS; y++) {
@@ -281,32 +360,67 @@
     function drawBackground(camX, camY) {
         const w = canvas.width;
         const h = canvas.height;
+        const darkness = getNightDarkness();
 
         const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
-        skyGrad.addColorStop(0, '#1e88e5');
-        skyGrad.addColorStop(0.55, '#64b5f6');
-        skyGrad.addColorStop(1, '#bbdefb');
+        if (dayTime >= 0.45 && dayTime < 0.62) {
+            skyGrad.addColorStop(0, '#1a237e');
+            skyGrad.addColorStop(0.5, '#e65100');
+            skyGrad.addColorStop(1, '#ffab91');
+        } else if (isNight()) {
+            skyGrad.addColorStop(0, '#050816');
+            skyGrad.addColorStop(0.6, '#0d1b2a');
+            skyGrad.addColorStop(1, '#1b263b');
+        } else {
+            skyGrad.addColorStop(0, '#1e88e5');
+            skyGrad.addColorStop(0.55, '#64b5f6');
+            skyGrad.addColorStop(1, '#bbdefb');
+        }
         ctx.fillStyle = skyGrad;
         ctx.fillRect(0, 0, w, h);
 
-        const sunX = Math.floor(w * 0.78 - camX * 0.02);
-        const sunY = Math.floor(75 - camY * 0.02);
-        ctx.fillStyle = 'rgba(255, 238, 88, 0.25)';
-        ctx.fillRect(sunX - 10, sunY - 10, 56, 56);
-        ctx.fillStyle = '#ffee58';
-        ctx.fillRect(sunX, sunY, 36, 36);
-        ctx.fillStyle = '#fff9c4';
-        ctx.fillRect(sunX + 6, sunY + 6, 24, 24);
+        // Звёзды ночью
+        if (darkness > 0.25) {
+            const starAlpha = Math.min(1, (darkness - 0.25) * 2.2);
+            stars.forEach(st => {
+                const blink = 0.65 + 0.35 * Math.sin(tick * 0.06 + st.twinkle);
+                ctx.fillStyle = `rgba(255, 255, 255, ${(starAlpha * blink).toFixed(2)})`;
+                const sx = Math.floor((st.x - camX * 0.04) % w);
+                const sy = Math.floor(st.y - camY * 0.02);
+                const drawX = sx < 0 ? sx + w : sx;
+                ctx.fillRect(drawX, sy, st.size, st.size);
+            });
+        }
+
+        // Солнце или Луна
+        const bodyX = Math.floor(w * 0.78 - camX * 0.02);
+        const bodyY = Math.floor(75 - camY * 0.02);
+        if (isNight()) {
+            ctx.fillStyle = 'rgba(207, 216, 220, 0.18)';
+            ctx.fillRect(bodyX - 8, bodyY - 8, 48, 48);
+            ctx.fillStyle = '#eceff1';
+            ctx.fillRect(bodyX, bodyY, 32, 32);
+            ctx.fillStyle = '#b0bec5';
+            ctx.fillRect(bodyX + 6, bodyY + 8, 7, 7);
+            ctx.fillRect(bodyX + 18, bodyY + 18, 6, 5);
+        } else {
+            ctx.fillStyle = 'rgba(255, 238, 88, 0.25)';
+            ctx.fillRect(bodyX - 10, bodyY - 10, 56, 56);
+            ctx.fillStyle = '#ffee58';
+            ctx.fillRect(bodyX, bodyY, 36, 36);
+            ctx.fillStyle = '#fff9c4';
+            ctx.fillRect(bodyX + 6, bodyY + 6, 24, 24);
+        }
 
         clouds.forEach(c => {
             c.x += c.speed;
             if (c.x > COLS * TILE) c.x = -150;
             const cx = Math.floor(c.x - camX * 0.15);
             const cy = Math.floor(c.y - camY * 0.05);
-            ctx.fillStyle = 'rgba(227, 242, 253, 0.85)';
+            ctx.fillStyle = isNight() ? 'rgba(69, 90, 100, 0.75)' : 'rgba(227, 242, 253, 0.85)';
             ctx.fillRect(cx, cy + 8, c.w, 12);
             ctx.fillRect(cx + 10, cy, c.w - 24, 10);
-            ctx.fillStyle = '#ffffff';
+            ctx.fillStyle = isNight() ? '#78909c' : '#ffffff';
             ctx.fillRect(cx + 12, cy + 2, c.w - 28, 6);
         });
 
@@ -314,7 +428,9 @@
             const mx = Math.floor(i * 220 - (camX * 0.25) % 220);
             const my = Math.floor(h * 0.58 - camY * 0.15);
             for (let step = 0; step < 12; step++) {
-                ctx.fillStyle = step < 3 ? '#e3f2fd' : '#5472d3';
+                ctx.fillStyle = step < 3
+                    ? (isNight() ? '#90a4ae' : '#e3f2fd')
+                    : (isNight() ? '#283593' : '#5472d3');
                 ctx.fillRect(mx + 110 - step * 10, my + step * 12, step * 20, 12);
             }
         }
@@ -322,11 +438,11 @@
         for (let i = -1; i < 10; i++) {
             const hx = Math.floor(i * 160 - (camX * 0.45) % 160);
             const hy = Math.floor(h * 0.68 - camY * 0.25);
-            ctx.fillStyle = '#2e7d32';
+            ctx.fillStyle = isNight() ? '#1b5e20' : '#2e7d32';
             ctx.fillRect(hx, hy, 162, h);
-            ctx.fillStyle = '#388e3c';
+            ctx.fillStyle = isNight() ? '#2e7d32' : '#388e3c';
             ctx.fillRect(hx + 20, hy - 16, 120, 16);
-            ctx.fillStyle = '#43a047';
+            ctx.fillStyle = isNight() ? '#388e3c' : '#43a047';
             ctx.fillRect(hx + 45, hy - 28, 70, 12);
         }
 
@@ -412,15 +528,27 @@
         ctx.fillStyle = '#000000';
         ctx.fillRect(sx - 2, sy + 2 - squish, en.w + 4, en.h + squish);
 
-        ctx.fillStyle = en.boss ? '#7b1fa2' : '#00c853';
-        ctx.fillRect(sx, sy + 4 - squish, en.w, en.h - 2 + squish);
-        ctx.fillStyle = en.boss ? '#ab47bc' : '#69f0ae';
-        ctx.fillRect(sx + 4, sy + 2 - squish, en.w - 8, en.h - 6 + squish);
+        if (en.boss) {
+            ctx.fillStyle = '#7b1fa2';
+            ctx.fillRect(sx, sy + 4 - squish, en.w, en.h - 2 + squish);
+            ctx.fillStyle = '#ab47bc';
+            ctx.fillRect(sx + 4, sy + 2 - squish, en.w - 8, en.h - 6 + squish);
+        } else if (en.nightMob) {
+            ctx.fillStyle = '#37474f';
+            ctx.fillRect(sx, sy + 4 - squish, en.w, en.h - 2 + squish);
+            ctx.fillStyle = '#546e7a';
+            ctx.fillRect(sx + 4, sy + 2 - squish, en.w - 8, en.h - 6 + squish);
+        } else {
+            ctx.fillStyle = '#00c853';
+            ctx.fillRect(sx, sy + 4 - squish, en.w, en.h - 2 + squish);
+            ctx.fillStyle = '#69f0ae';
+            ctx.fillRect(sx + 4, sy + 2 - squish, en.w - 8, en.h - 6 + squish);
+        }
 
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.fillStyle = en.nightMob ? 'rgba(255, 82, 82, 0.55)' : 'rgba(255, 255, 255, 0.75)';
         ctx.fillRect(sx + 6, sy + 6 - squish, 6, 4);
 
-        ctx.fillStyle = '#000000';
+        ctx.fillStyle = en.nightMob ? '#ff5252' : '#000000';
         const eyeOffset = en.vx > 0 ? en.w - 16 : 6;
         ctx.fillRect(sx + eyeOffset, sy + 10 - squish, 3, 4);
         ctx.fillRect(sx + eyeOffset + 7, sy + 10 - squish, 3, 4);
@@ -459,7 +587,6 @@
         return false;
     }
 
-    
     const keys = { left: false, right: false };
     window.addEventListener('keydown', e => {
         if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
@@ -549,45 +676,6 @@
         if (e.button === 0) handleWorldTap(e.clientX, e.clientY);
     });
 
-    canvas.addEventListener('pointerdown', e => {
-        try {
-            if (!e || !Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
-            const camX = Math.floor(player.x - canvas.width / 2);
-            const camY = Math.floor(player.y - canvas.height / 2);
-            const worldX = e.clientX + camX;
-            const worldY = e.clientY + camY;
-
-            if (Math.hypot(worldX - guide.x, worldY - guide.y) < 60 && Math.hypot(player.x - guide.x, player.y - guide.y) < 100) {
-                openDialog();
-                return;
-            }
-
-            if (selectedTool === 2) {
-                performAttack();
-                return;
-            }
-
-            const tx = Math.floor(worldX / TILE);
-            const ty = Math.floor(worldY / TILE);
-            const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
-
-            if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
-                const block = world[ty][tx];
-                if (selectedTool === 0 && block > 0) {
-                    if (block === 1 || block === 2) player.dirt++;
-                    if (block === 4) { player.ore++; checkQuest(); }
-                    world[ty][tx] = 0;
-                    updateUI();
-                } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
-                    world[ty][tx] = 2;
-                    player.dirt--;
-                    if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
-                    updateUI();
-                }
-            }
-        } catch (_) {}
-    });
-
     function performAttack() {
         if (player.attackCooldown > 0) return;
         player.attackCooldown = 20;
@@ -667,6 +755,7 @@
 
     function update() {
         tick++;
+        updateDayCycle();
         if (player.attackCooldown > 0) player.attackCooldown--;
 
         if (keys.left) { player.vx = -player.speed; player.facing = -1; }
@@ -690,18 +779,21 @@
         guide.y += guide.vy;
         if (checkCollision(guide)) { guide.y -= guide.vy; guide.vy = 0; }
 
+        const nightNow = isNight();
         enemies.forEach(en => {
             en.vy += GRAVITY;
             en.y += en.vy;
             if (checkCollision(en)) {
-                if (en.vy > 0 && Math.random() < 0.03) en.vy = -7;
+                if (en.vy > 0 && Math.random() < (nightNow ? 0.045 : 0.03)) en.vy = -7;
                 else { en.y -= en.vy; en.vy = 0; }
             }
             en.x += en.vx;
             if (checkCollision(en)) { en.x -= en.vx; en.vx *= -1; }
 
             if (Math.hypot(en.x - player.x, en.y - player.y) < 30 && player.attackCooldown === 0) {
-                player.hp = Math.max(0, player.hp - (en.boss ? 15 : 5));
+                const baseDmg = en.boss ? 15 : (en.nightMob ? 10 : 5);
+                const dmg = nightNow ? Math.round(baseDmg * 1.25) : baseDmg;
+                player.hp = Math.max(0, player.hp - dmg);
                 player.attackCooldown = 30;
                 updateUI();
                 if (player.hp === 0) {
@@ -715,6 +807,7 @@
     function draw() {
         const camX = Math.floor(player.x - canvas.width / 2);
         const camY = Math.floor(player.y - canvas.height / 2);
+        const nightDarkness = getNightDarkness();
 
         drawBackground(camX, camY);
 
@@ -773,6 +866,12 @@
         enemies.forEach(en => drawSlime(en));
 
         ctx.restore();
+
+        // Ночная дымка поверх мира
+        if (nightDarkness > 0.01) {
+            ctx.fillStyle = `rgba(8, 13, 34, ${nightDarkness.toFixed(3)})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
     }
 
     function loop() {
