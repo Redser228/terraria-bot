@@ -147,8 +147,7 @@
     const ROWS = 40;
     const GRAVITY = 0.5;
 
-    // Цикл дня и ночи: 0.0..0.55 — день/закат, 0.55..1.0 — ночь/рассвет
-    const DAY_CYCLE_DURATION = 60 * 60; // ~60 сек при 60 FPS
+    const DAY_CYCLE_DURATION = 60 * 60;
     let dayTime = 0.15;
     let wasNight = false;
     let nightSpawnTimer = 0;
@@ -157,10 +156,8 @@
     let selectedTool = 0;
     let questStage = 0;
     let tick = 0;
+    let playerHitFlash = 0;
 
-    // ==========================================
-    // ГЕНЕРАТОР ЧЕТКИХ ПИКСЕЛЬНЫХ ТЕКСТУР (16x16)
-    // ==========================================
     const tileSprites = {};
 
     function createPixelSprite(drawFn) {
@@ -246,7 +243,7 @@
     const player = {
         x: 10 * TILE, y: 10 * TILE, w: 22, h: 42,
         vx: 0, vy: 0, speed: 4, jump: -9.5,
-        grounded: false, facing: 1, hp: 100,
+        grounded: false, facing: 1, hp: 100, maxHp: 100,
         dirt: 10, ore: 0, attackCooldown: 0
     };
 
@@ -275,7 +272,6 @@
     }
 
     function getNightDarkness() {
-        // 0 = яркий день, ~0.68 = глубокая ночь
         if (dayTime < 0.45) return 0;
         if (dayTime < 0.58) return ((dayTime - 0.45) / 0.13) * 0.68;
         if (dayTime < 0.88) return 0.68;
@@ -296,11 +292,9 @@
         }
 
         if (nightNow && !wasNight) {
-            // При наступлении ночи добавляем пару ночных слизней поодаль от игрока
             spawnNightEnemy();
             spawnNightEnemy();
         } else if (!nightNow && wasNight) {
-            // Днём ночные монстры сгорают
             enemies = enemies.filter(en => !en.nightMob);
         }
         wasNight = nightNow;
@@ -379,7 +373,6 @@
         ctx.fillStyle = skyGrad;
         ctx.fillRect(0, 0, w, h);
 
-        // Звёзды ночью
         if (darkness > 0.25) {
             const starAlpha = Math.min(1, (darkness - 0.25) * 2.2);
             stars.forEach(st => {
@@ -392,7 +385,6 @@
             });
         }
 
-        // Солнце или Луна
         const bodyX = Math.floor(w * 0.78 - camX * 0.02);
         const bodyY = Math.floor(75 - camY * 0.02);
         if (isNight()) {
@@ -474,7 +466,7 @@
         ctx.fillRect(px + 3, py, 16, 7);
         ctx.fillRect(dir === 1 ? px + 2 : px + 16, py + 4, 4, 8);
 
-        ctx.fillStyle = '#ffccbc';
+        ctx.fillStyle = !isGuide && playerHitFlash > 0 ? '#ff8a80' : '#ffccbc';
         ctx.fillRect(px + 4, py + 6, 14, 12);
         ctx.fillStyle = '#e6a18c';
         ctx.fillRect(px + 4, py + 15, 14, 3);
@@ -518,6 +510,29 @@
                 ctx.fillRect(handX - 1, handY + 4, 10, 3);
             }
         }
+    }
+
+    function drawPlayerHealthBar() {
+        const ratio = Math.max(0, Math.min(1, player.hp / player.maxHp));
+        const barW = 34;
+        const barH = 6;
+        const bx = Math.floor(player.x + player.w / 2 - barW / 2);
+        const by = Math.floor(player.y - 16);
+
+        ctx.fillStyle = '#111111';
+        ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+
+        if (ratio > 0.5) ctx.fillStyle = '#00e676';
+        else if (ratio > 0.25) ctx.fillStyle = '#ffd54f';
+        else ctx.fillStyle = '#ff5252';
+
+        ctx.fillRect(bx, by, Math.floor(barW * ratio), barH);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(player.hp), bx + barW / 2, by - 3);
+        ctx.textAlign = 'left';
     }
 
     function drawSlime(en) {
@@ -587,7 +602,10 @@
         return false;
     }
 
+    // Независимое отслеживание кнопок движения и прыжка при мультитаче
     const keys = { left: false, right: false };
+    const activeMoveTouches = { left: new Set(), right: new Set() };
+
     window.addEventListener('keydown', e => {
         if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
         if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
@@ -600,19 +618,48 @@
         if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
     });
 
-    const bindBtn = (id, key) => {
+    function syncMoveKey(dirKey) {
+        keys[dirKey] = activeMoveTouches[dirKey].size > 0;
+    }
+
+    function pruneTouches(dirKey, e) {
+        const liveIds = new Set(Array.from(e.touches || []).map(t => t.identifier));
+        for (const id of activeMoveTouches[dirKey]) {
+            if (!liveIds.has(id)) activeMoveTouches[dirKey].delete(id);
+        }
+        syncMoveKey(dirKey);
+    }
+
+    const bindMoveBtn = (id, dirKey) => {
         const el = document.getElementById(id);
-        el.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); keys[key] = true; }, { passive: false });
-        el.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); keys[key] = false; }, { passive: false });
-        el.addEventListener('touchcancel', () => { keys[key] = false; });
-        el.addEventListener('mousedown', e => { e.stopPropagation(); keys[key] = true; });
-        window.addEventListener('mouseup', () => { keys[key] = false; });
+        el.addEventListener('touchstart', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            Array.from(e.changedTouches || []).forEach(t => activeMoveTouches[dirKey].add(t.identifier));
+            syncMoveKey(dirKey);
+        }, { passive: false });
+
+        const release = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            Array.from(e.changedTouches || []).forEach(t => activeMoveTouches[dirKey].delete(t.identifier));
+            pruneTouches(dirKey, e);
+        };
+        el.addEventListener('touchend', release, { passive: false });
+        el.addEventListener('touchcancel', release, { passive: false });
+
+        el.addEventListener('mousedown', e => { e.stopPropagation(); keys[dirKey] = true; });
+        window.addEventListener('mouseup', () => {
+            if (activeMoveTouches[dirKey].size === 0) keys[dirKey] = false;
+        });
     };
-    bindBtn('btn-left', 'left');
-    bindBtn('btn-right', 'right');
+
+    bindMoveBtn('btn-left', 'left');
+    bindMoveBtn('btn-right', 'right');
 
     document.getElementById('btn-jump').addEventListener('touchstart', e => {
-        e.preventDefault(); e.stopPropagation();
+        e.preventDefault();
+        e.stopPropagation();
         if (player.grounded) { player.vy = player.jump; player.grounded = false; }
     }, { passive: false });
     document.getElementById('btn-jump').addEventListener('mousedown', e => {
@@ -621,7 +668,8 @@
     });
 
     document.getElementById('btn-action').addEventListener('touchstart', e => {
-        e.preventDefault(); e.stopPropagation();
+        e.preventDefault();
+        e.stopPropagation();
         performAttack();
     }, { passive: false });
     document.getElementById('btn-action').addEventListener('mousedown', e => {
@@ -666,10 +714,12 @@
         }
     }
 
+    // Обрабатываем каждый новый палец на холсте независимо от пальца на кнопке ходьбы
     canvas.addEventListener('touchstart', e => {
         e.preventDefault();
-        const t = e.changedTouches && e.changedTouches[0];
-        if (t) handleWorldTap(t.clientX, t.clientY);
+        Array.from(e.changedTouches || []).forEach(t => {
+            handleWorldTap(t.clientX, t.clientY);
+        });
     }, { passive: false });
 
     canvas.addEventListener('mousedown', e => {
@@ -757,6 +807,7 @@
         tick++;
         updateDayCycle();
         if (player.attackCooldown > 0) player.attackCooldown--;
+        if (playerHitFlash > 0) playerHitFlash--;
 
         if (keys.left) { player.vx = -player.speed; player.facing = -1; }
         else if (keys.right) { player.vx = player.speed; player.facing = 1; }
@@ -795,9 +846,12 @@
                 const dmg = nightNow ? Math.round(baseDmg * 1.25) : baseDmg;
                 player.hp = Math.max(0, player.hp - dmg);
                 player.attackCooldown = 30;
+                playerHitFlash = 10;
                 updateUI();
                 if (player.hp === 0) {
-                    player.hp = 100; player.x = 10 * TILE; player.y = 8 * TILE;
+                    player.hp = player.maxHp;
+                    player.x = 10 * TILE;
+                    player.y = 8 * TILE;
                     updateUI();
                 }
             }
@@ -852,6 +906,7 @@
         ctx.fillText('! Гид', Math.floor(guide.x - 6), Math.floor(guide.y - 10));
 
         drawCharacter(player, false);
+        drawPlayerHealthBar();
 
         if (player.attackCooldown > 10) {
             const isUpgraded = questStage >= 2;
@@ -867,7 +922,6 @@
 
         ctx.restore();
 
-        // Ночная дымка поверх мира
         if (nightDarkness > 0.01) {
             ctx.fillStyle = `rgba(8, 13, 34, ${nightDarkness.toFixed(3)})`;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
