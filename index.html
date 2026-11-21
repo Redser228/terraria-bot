@@ -284,14 +284,20 @@
         twinkle: i * 0.7
     }));
 
-    // Детерминированный псевдослучайный генератор для бесконечных чанков
+    // Уникальный сид мира при каждом запуске игры (чтобы миры не повторялись)
+    const WORLD_SEED = Math.floor(Math.random() * 1000000) + 1;
+
     function seededNoise(x, y) {
-        const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+        const n = Math.sin((x + WORLD_SEED) * 127.1 + (y + WORLD_SEED * 0.37) * 311.7) * 43758.5453123;
         return n - Math.floor(n);
     }
 
     function getSurfaceY(tx) {
-        return 14 + Math.floor(Math.sin(tx * 0.2) * 2 + Math.cos(tx * 0.05) * 1.5);
+        const s = tx + WORLD_SEED * 0.13;
+        const wave1 = Math.sin(s * 0.17) * 2.5;
+        const wave2 = Math.cos(s * 0.065) * 3.0;
+        const micro = (seededNoise(tx, 0) - 0.5) * 1.4;
+        return Math.max(8, Math.min(20, 14 + Math.floor(wave1 + wave2 + micro)));
     }
 
     function generateChunk(chunkX) {
@@ -301,41 +307,46 @@
         for (let lx = 0; lx < CHUNK_SIZE; lx++) {
             const tx = baseCol + lx;
             const surface = getSurfaceY(tx);
+            const dirtDepth = 3 + Math.floor(seededNoise(tx, 17) * 4); // 3..6 блоков земли
 
             for (let ty = 0; ty < ROWS; ty++) {
                 if (ty < surface) {
                     grid[ty][lx] = 0;
                 } else if (ty === surface) {
                     grid[ty][lx] = 1;
-                } else if (ty < surface + 5) {
+                } else if (ty < surface + dirtDepth) {
                     grid[ty][lx] = 2;
                 } else {
                     const rCave = seededNoise(tx, ty);
                     const rOre = seededNoise(tx + 500, ty - 300);
-                    if (rCave < 0.15) grid[ty][lx] = 0;
-                    else if (rOre < 0.08) grid[ty][lx] = 4;
+                    const rVein = seededNoise(Math.floor(tx / 2), Math.floor(ty / 2));
+
+                    if (rCave < 0.16) grid[ty][lx] = 0;
+                    else if (rOre < 0.075 || (rVein > 0.78 && rOre < 0.22)) grid[ty][lx] = 4;
                     else grid[ty][lx] = 3;
                 }
             }
 
-            // Деревья на поверхности в каждом чанке
-            if (Math.abs(tx) % 7 === 4 && surface > 4) {
+            // Случайные деревья на поверхности (с отступом от краёв чанка)
+            const rTree = seededNoise(tx, 99);
+            if (lx > 1 && lx < CHUNK_SIZE - 2 && rTree < 0.16 && surface > 5) {
                 const sy = surface;
-                if (lx > 0 && lx < CHUNK_SIZE - 1) {
-                    grid[sy - 1][lx] = 5;
-                    grid[sy - 2][lx] = 5;
-                    grid[sy - 3][lx] = 5;
-                    grid[sy - 4][lx] = 6;
-                    grid[sy - 4][lx - 1] = 6;
-                    grid[sy - 4][lx + 1] = 6;
-                    grid[sy - 5][lx] = 6;
+                const treeHeight = 3 + (Math.floor(seededNoise(tx, 101) * 2));
+                for (let h = 1; h <= treeHeight; h++) {
+                    grid[sy - h][lx] = 5;
+                }
+                const crownY = sy - treeHeight - 1;
+                grid[crownY][lx] = 6;
+                grid[crownY][lx - 1] = 6;
+                grid[crownY][lx + 1] = 6;
+                if (crownY - 1 >= 0) {
+                    grid[crownY - 1][lx] = 6;
                 }
             }
         }
 
         chunks.set(chunkX, grid);
 
-        // В далёких восточных чанках за пределами старта можно встретить дополнительного мини-босса
         if (chunkX >= 5 && chunkX % 5 === 0 && !spawnedBossChunks.has(chunkX)) {
             spawnedBossChunks.add(chunkX);
             enemies.push({
