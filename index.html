@@ -143,7 +143,7 @@
     resize();
 
     const TILE = 32;
-    const COLS = 60;
+    const CHUNK_SIZE = 16; // Ширина одного чанка в тайлах
     const ROWS = 40;
     const GRAVITY = 0.5;
 
@@ -152,14 +152,18 @@
     let wasNight = false;
     let nightSpawnTimer = 0;
 
-    let world = [];
+    // Хранилище чанков: ключ "chunkX", значение — двумерный массив [ROWS][CHUNK_SIZE]
+    const chunks = new Map();
+    const spawnedBossChunks = new Set();
+
     let selectedTool = 0;
     let questStage = 0;
     let tick = 0;
     let playerHitFlash = 0;
+    let damageCooldown = 0;
+    let regenTick = 0;
 
-    // Активные касания по экрану (каждый палец на canvas обрабатывается отдельно)
-    const canvasTouches = new Map(); // touchId -> { clientX, clientY, cooldown }
+    const canvasTouches = new Map();
 
     const tileSprites = {};
 
@@ -270,6 +274,107 @@
         twinkle: i * 0.7
     }));
 
+    // Детерминированный псевдослучайный генератор для бесконечных чанков
+    function seededNoise(x, y) {
+        const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+        return n - Math.floor(n);
+    }
+
+    function getSurfaceY(tx) {
+        return 14 + Math.floor(Math.sin(tx * 0.2) * 2 + Math.cos(tx * 0.05) * 1.5);
+    }
+
+    function generateChunk(chunkX) {
+        const grid = Array.from({ length: ROWS }, () => Array(CHUNK_SIZE).fill(0));
+        const baseCol = chunkX * CHUNK_SIZE;
+
+        for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+            const tx = baseCol + lx;
+            const surface = getSurfaceY(tx);
+
+            for (let ty = 0; ty < ROWS; ty++) {
+                if (ty < surface) {
+                    grid[ty][lx] = 0;
+                } else if (ty === surface) {
+                    grid[ty][lx] = 1;
+                } else if (ty < surface + 5) {
+                    grid[ty][lx] = 2;
+                } else {
+                    const rCave = seededNoise(tx, ty);
+                    const rOre = seededNoise(tx + 500, ty - 300);
+                    if (rCave < 0.15) grid[ty][lx] = 0;
+                    else if (rOre < 0.08) grid[ty][lx] = 4;
+                    else grid[ty][lx] = 3;
+                }
+            }
+
+            // Деревья на поверхности в каждом чанке
+            if (Math.abs(tx) % 7 === 4 && surface > 4) {
+                const sy = surface;
+                if (lx > 0 && lx < CHUNK_SIZE - 1) {
+                    grid[sy - 1][lx] = 5;
+                    grid[sy - 2][lx] = 5;
+                    grid[sy - 3][lx] = 5;
+                    grid[sy - 4][lx] = 6;
+                    grid[sy - 4][lx - 1] = 6;
+                    grid[sy - 4][lx + 1] = 6;
+                    grid[sy - 5][lx] = 6;
+                }
+            }
+        }
+
+        chunks.set(chunkX, grid);
+
+        // В далёких восточных чанках за пределами старта можно встретить дополнительного мини-босса
+        if (chunkX >= 5 && chunkX % 5 === 0 && !spawnedBossChunks.has(chunkX)) {
+            spawnedBossChunks.add(chunkX);
+            enemies.push({
+                x: (baseCol + 8) * TILE,
+                y: 6 * TILE,
+                w: 44,
+                h: 34,
+                vx: -1.2,
+                vy: 0,
+                hp: 110,
+                maxHp: 110,
+                boss: false,
+                nightMob: true
+            });
+        }
+
+        return grid;
+    }
+
+    function ensureChunk(chunkX) {
+        if (!chunks.has(chunkX)) {
+            return generateChunk(chunkX);
+        }
+        return chunks.get(chunkX);
+    }
+
+    function getTile(tx, ty) {
+        if (ty < 0 || ty >= ROWS) return 0;
+        const chunkX = Math.floor(tx / CHUNK_SIZE);
+        const localX = ((tx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        const grid = ensureChunk(chunkX);
+        return grid[ty][localX] || 0;
+    }
+
+    function setTile(tx, ty, val) {
+        if (ty < 0 || ty >= ROWS) return;
+        const chunkX = Math.floor(tx / CHUNK_SIZE);
+        const localX = ((tx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        const grid = ensureChunk(chunkX);
+        grid[ty][localX] = val;
+    }
+
+    function generateInitialChunks() {
+        chunks.clear();
+        for (let cx = -1; cx <= 3; cx++) {
+            generateChunk(cx);
+        }
+    }
+
     function isNight() {
         return dayTime >= 0.55 && dayTime < 0.92;
     }
@@ -292,7 +397,7 @@
             if (dayTime >= 0.45 && dayTime < 0.58) phase = '🌅 Закат';
             else if (dayTime >= 0.58 && dayTime < 0.88) phase = '🌙 Ночь';
             else if (dayTime >= 0.88) phase = '🌄 Рассвет';
-            timeBox.textContent = phase + ' · v5';
+            timeBox.textContent = phase + ' · v6';
         }
 
         if (nightNow && !wasNight) {
@@ -317,7 +422,7 @@
 
     function spawnNightEnemy() {
         const side = Math.random() < 0.5 ? -1 : 1;
-        const spawnCol = Math.max(3, Math.min(COLS - 4, Math.floor(player.x / TILE) + side * 12));
+        const spawnCol = Math.floor(player.x / TILE) + side * 12;
         enemies.push({
             x: spawnCol * TILE,
             y: 6 * TILE,
@@ -332,26 +437,22 @@
         });
     }
 
-    function generateWorld() {
-        for (let y = 0; y < ROWS; y++) {
-            world[y] = [];
-            for (let x = 0; x < COLS; x++) {
-                let surface = 14 + Math.floor(Math.sin(x * 0.2) * 2);
-                if (y < surface) world[y][x] = 0;
-                else if (y === surface) world[y][x] = 1;
-                else if (y < surface + 5) world[y][x] = 2;
-                else {
-                    if (Math.random() < 0.15) world[y][x] = 0;
-                    else if (Math.random() < 0.08) world[y][x] = 4;
-                    else world[y][x] = 3;
-                }
-            }
+    function updateHealthRegen() {
+        if (damageCooldown > 0) {
+            damageCooldown--;
+            regenTick = 0;
+            return;
         }
-        for (let x = 4; x < COLS - 4; x += 7) {
-            let sy = 14 + Math.floor(Math.sin(x * 0.2) * 2);
-            world[sy - 1][x] = 5; world[sy - 2][x] = 5; world[sy - 3][x] = 5;
-            world[sy - 4][x] = 6; world[sy - 4][x - 1] = 6; world[sy - 4][x + 1] = 6;
-            world[sy - 5][x] = 6;
+        if (player.hp < player.maxHp) {
+            regenTick++;
+            // Восстанавливает +2 HP каждые 45 кадров (~0.75 сек) после паузы без урона
+            if (regenTick >= 45) {
+                regenTick = 0;
+                player.hp = Math.min(player.maxHp, player.hp + 2);
+                updateUI();
+            }
+        } else {
+            regenTick = 0;
         }
     }
 
@@ -410,8 +511,8 @@
 
         clouds.forEach(c => {
             c.x += c.speed;
-            if (c.x > COLS * TILE) c.x = -150;
-            const cx = Math.floor(c.x - camX * 0.15);
+            const span = w + 260;
+            const cx = Math.floor((((c.x - camX * 0.15) % span) + span) % span - 130);
             const cy = Math.floor(c.y - camY * 0.05);
             ctx.fillStyle = isNight() ? 'rgba(69, 90, 100, 0.75)' : 'rgba(227, 242, 253, 0.85)';
             ctx.fillRect(cx, cy + 8, c.w, 12);
@@ -421,7 +522,7 @@
         });
 
         for (let i = -1; i < 8; i++) {
-            const mx = Math.floor(i * 220 - (camX * 0.25) % 220);
+            const mx = Math.floor(i * 220 - (((camX * 0.25) % 220) + 220) % 220);
             const my = Math.floor(h * 0.58 - camY * 0.15);
             for (let step = 0; step < 12; step++) {
                 ctx.fillStyle = step < 3
@@ -432,7 +533,7 @@
         }
 
         for (let i = -1; i < 10; i++) {
-            const hx = Math.floor(i * 160 - (camX * 0.45) % 160);
+            const hx = Math.floor(i * 160 - (((camX * 0.45) % 160) + 160) % 160);
             const hy = Math.floor(h * 0.68 - camY * 0.25);
             ctx.fillStyle = isNight() ? '#1b5e20' : '#2e7d32';
             ctx.fillRect(hx, hy, 162, h);
@@ -447,7 +548,7 @@
             ctx.fillStyle = '#261811';
             ctx.fillRect(0, Math.max(0, undergroundY), w, h);
             ctx.fillStyle = '#1c110c';
-            const startX = -Math.floor((camX * 0.8) % 32);
+            const startX = -Math.floor((((camX * 0.8) % 32) + 32) % 32);
             for (let by = Math.max(0, undergroundY); by < h; by += 32) {
                 for (let bx = startX; bx < w; bx += 32) {
                     ctx.fillRect(bx + 4, by + 4, 12, 8);
@@ -600,7 +701,8 @@
 
         for (let y = top; y <= bottom; y++) {
             for (let x = left; x <= right; x++) {
-                if (world[y] && world[y][x] >= 1 && world[y][x] <= 4) {
+                const t = getTile(x, y);
+                if (t >= 1 && t <= 4) {
                     return true;
                 }
             }
@@ -608,7 +710,6 @@
         return false;
     }
 
-    // Независимое отслеживание движения и действий (одновременный мультитач)
     const keys = { left: false, right: false };
     const activeMoveTouches = { left: new Set(), right: new Set() };
 
@@ -705,17 +806,17 @@
         const ty = Math.floor(worldY / TILE);
         const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
 
-        if (dist < 135 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
-            const block = world[ty][tx];
+        if (dist < 135 && ty >= 0 && ty < ROWS) {
+            const block = getTile(tx, ty);
             if (selectedTool === 0 && block > 0) {
                 if (block === 1 || block === 2) player.dirt++;
                 if (block === 4) { player.ore++; checkQuest(); }
-                world[ty][tx] = 0;
+                setTile(tx, ty, 0);
                 updateUI();
             } else if (selectedTool === 1 && block === 0 && player.dirt > 0) {
-                world[ty][tx] = 2;
+                setTile(tx, ty, 2);
                 player.dirt--;
-                if (checkCollision(player)) { world[ty][tx] = 0; player.dirt++; }
+                if (checkCollision(player)) { setTile(tx, ty, 0); player.dirt++; }
                 updateUI();
             }
         }
@@ -843,6 +944,7 @@
     function update() {
         tick++;
         updateDayCycle();
+        updateHealthRegen();
         processHeldCanvasTouches();
         if (player.attackCooldown > 0) player.attackCooldown--;
         if (playerHitFlash > 0) playerHitFlash--;
@@ -862,6 +964,12 @@
             player.y -= player.vy;
             player.vy = 0;
         }
+
+        // Подгружаем видимые чанки вокруг игрока (без генерации далёких невидимых участков)
+        const playerChunk = Math.floor((player.x + player.w / 2) / (CHUNK_SIZE * TILE));
+        ensureChunk(playerChunk - 1);
+        ensureChunk(playerChunk);
+        ensureChunk(playerChunk + 1);
 
         guide.facing = player.x < guide.x ? -1 : 1;
         guide.vy = (guide.vy || 0) + GRAVITY;
@@ -885,6 +993,7 @@
                 player.hp = Math.max(0, player.hp - dmg);
                 player.attackCooldown = 30;
                 playerHitFlash = 10;
+                damageCooldown = 180; // ~3 сек без урона перед началом регенерации
                 updateUI();
                 if (player.hp === 0) {
                     player.hp = player.maxHp;
@@ -906,14 +1015,15 @@
         ctx.save();
         ctx.translate(-camX, -camY);
 
-        const startCol = Math.max(0, Math.floor(camX / TILE) - 1);
-        const endCol = Math.min(COLS - 1, Math.ceil((camX + canvas.width) / TILE) + 1);
+        // Отрисовываем и генерируем только те тайлы, которые попадают в кадр
+        const startCol = Math.floor(camX / TILE) - 1;
+        const endCol = Math.ceil((camX + canvas.width) / TILE) + 1;
         const startRow = Math.max(0, Math.floor(camY / TILE) - 1);
         const endRow = Math.min(ROWS - 1, Math.ceil((camY + canvas.height) / TILE) + 1);
 
         for (let y = startRow; y <= endRow; y++) {
             for (let x = startCol; x <= endCol; x++) {
-                const type = world[y] ? world[y][x] : 0;
+                const type = getTile(x, y);
                 if (type > 0 && tileSprites[type]) {
                     const px = x * TILE;
                     const py = y * TILE;
@@ -921,10 +1031,10 @@
 
                     if (type <= 4) {
                         ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-                        if (y > 0 && world[y - 1][x] === 0) ctx.fillRect(px, py, TILE, 2);
-                        if (y < ROWS - 1 && world[y + 1][x] === 0) ctx.fillRect(px, py + TILE - 2, TILE, 2);
-                        if (x > 0 && world[y][x - 1] === 0) ctx.fillRect(px, py, 2, TILE);
-                        if (x < COLS - 1 && world[y][x + 1] === 0) ctx.fillRect(px + TILE - 2, py, 2, TILE);
+                        if (getTile(x, y - 1) === 0) ctx.fillRect(px, py, TILE, 2);
+                        if (getTile(x, y + 1) === 0) ctx.fillRect(px, py + TILE - 2, TILE, 2);
+                        if (getTile(x - 1, y) === 0) ctx.fillRect(px, py, 2, TILE);
+                        if (getTile(x + 1, y) === 0) ctx.fillRect(px + TILE - 2, py, 2, TILE);
                     }
 
                     if (y > 18) {
@@ -982,7 +1092,7 @@
     }
 
     initTextures();
-    generateWorld();
+    generateInitialChunks();
     loop();
 </script>
 </body>
