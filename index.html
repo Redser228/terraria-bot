@@ -158,6 +158,9 @@
     let tick = 0;
     let playerHitFlash = 0;
 
+    // Активные касания по экрану (каждый палец на canvas обрабатывается отдельно)
+    const canvasTouches = new Map(); // touchId -> { clientX, clientY, cooldown }
+
     const tileSprites = {};
 
     function createPixelSprite(drawFn) {
@@ -285,10 +288,11 @@
         const timeBox = document.getElementById('time-box');
 
         if (timeBox) {
-            if (dayTime < 0.45) timeBox.textContent = '☀️ День';
-            else if (dayTime < 0.58) timeBox.textContent = '🌅 Закат';
-            else if (dayTime < 0.88) timeBox.textContent = '🌙 Ночь';
-            else timeBox.textContent = '🌄 Рассвет';
+            let phase = '☀️ День';
+            if (dayTime >= 0.45 && dayTime < 0.58) phase = '🌅 Закат';
+            else if (dayTime >= 0.58 && dayTime < 0.88) phase = '🌙 Ночь';
+            else if (dayTime >= 0.88) phase = '🌄 Рассвет';
+            timeBox.textContent = phase + ' · v5';
         }
 
         if (nightNow && !wasNight) {
@@ -514,10 +518,10 @@
 
     function drawPlayerHealthBar() {
         const ratio = Math.max(0, Math.min(1, player.hp / player.maxHp));
-        const barW = 34;
+        const barW = 36;
         const barH = 6;
         const bx = Math.floor(player.x + player.w / 2 - barW / 2);
-        const by = Math.floor(player.y - 16);
+        const by = Math.floor(player.y - 18);
 
         ctx.fillStyle = '#111111';
         ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
@@ -528,10 +532,12 @@
 
         ctx.fillRect(bx, by, Math.floor(barW * ratio), barH);
 
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#111111';
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(String(player.hp), bx + barW / 2, by - 3);
+        ctx.fillText(String(player.hp), bx + barW / 2 + 1, by - 3);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(String(player.hp), bx + barW / 2, by - 4);
         ctx.textAlign = 'left';
     }
 
@@ -602,7 +608,7 @@
         return false;
     }
 
-    // Независимое отслеживание кнопок движения и прыжка при мультитаче
+    // Независимое отслеживание движения и действий (одновременный мультитач)
     const keys = { left: false, right: false };
     const activeMoveTouches = { left: new Set(), right: new Set() };
 
@@ -612,6 +618,7 @@
         if ((e.code === 'Space' || e.code === 'KeyW') && player.grounded) {
             player.vy = player.jump; player.grounded = false;
         }
+        if (e.code === 'KeyF' || e.code === 'Enter') performAttack();
     });
     window.addEventListener('keyup', e => {
         if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
@@ -677,7 +684,7 @@
         performAttack();
     });
 
-    function handleWorldTap(clientX, clientY) {
+    function handleWorldActionAt(clientX, clientY) {
         if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
         const camX = Math.floor(player.x - canvas.width / 2);
         const camY = Math.floor(player.y - canvas.height / 2);
@@ -698,7 +705,7 @@
         const ty = Math.floor(worldY / TILE);
         const dist = Math.hypot(worldX - (player.x + player.w / 2), worldY - (player.y + player.h / 2));
 
-        if (dist < 130 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
+        if (dist < 135 && ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS && world[ty]) {
             const block = world[ty][tx];
             if (selectedTool === 0 && block > 0) {
                 if (block === 1 || block === 2) player.dirt++;
@@ -714,17 +721,47 @@
         }
     }
 
-    // Обрабатываем каждый новый палец на холсте независимо от пальца на кнопке ходьбы
     canvas.addEventListener('touchstart', e => {
         e.preventDefault();
         Array.from(e.changedTouches || []).forEach(t => {
-            handleWorldTap(t.clientX, t.clientY);
+            canvasTouches.set(t.identifier, { clientX: t.clientX, clientY: t.clientY, cooldown: 0 });
+            handleWorldActionAt(t.clientX, t.clientY);
         });
     }, { passive: false });
 
+    canvas.addEventListener('touchmove', e => {
+        e.preventDefault();
+        Array.from(e.changedTouches || []).forEach(t => {
+            const entry = canvasTouches.get(t.identifier);
+            if (entry) {
+                entry.clientX = t.clientX;
+                entry.clientY = t.clientY;
+            }
+        });
+    }, { passive: false });
+
+    const endCanvasTouch = e => {
+        e.preventDefault();
+        Array.from(e.changedTouches || []).forEach(t => canvasTouches.delete(t.identifier));
+    };
+    canvas.addEventListener('touchend', endCanvasTouch, { passive: false });
+    canvas.addEventListener('touchcancel', endCanvasTouch, { passive: false });
+
     canvas.addEventListener('mousedown', e => {
-        if (e.button === 0) handleWorldTap(e.clientX, e.clientY);
+        if (e.button === 0) handleWorldActionAt(e.clientX, e.clientY);
     });
+
+    function processHeldCanvasTouches() {
+        if (selectedTool === 2) return;
+        for (const [, entry] of canvasTouches) {
+            if (entry.cooldown > 0) {
+                entry.cooldown--;
+                continue;
+            }
+            entry.cooldown = 8;
+            handleWorldActionAt(entry.clientX, entry.clientY);
+        }
+    }
 
     function performAttack() {
         if (player.attackCooldown > 0) return;
@@ -806,6 +843,7 @@
     function update() {
         tick++;
         updateDayCycle();
+        processHeldCanvasTouches();
         if (player.attackCooldown > 0) player.attackCooldown--;
         if (playerHitFlash > 0) playerHitFlash--;
 
